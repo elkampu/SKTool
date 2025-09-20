@@ -8,10 +8,13 @@ public static class HikvisionConstants
     public const string SystemDeviceInfo = "/ISAPI/System/deviceInfo";
     public const string SystemTime = "/ISAPI/System/time";
     public const string SystemTimeNtpServers = "/ISAPI/System/time/ntpServers";
+    public const string SystemTimeCapabilities = "/ISAPI/System/time/capabilities";
     public const string SystemReboot = "/ISAPI/System/reboot";
 
     // Network
     public static string NetworkInterface(int id) => $"/ISAPI/System/Network/interfaces/{id}";
+    public static string NetworkInterfaceIpAddressLower(int id) => $"/ISAPI/System/Network/interfaces/{id}/ipAddress";
+    public static string NetworkInterfaceIpAddressUpper(int id) => $"/ISAPI/System/Network/interfaces/{id}/IPAddress";
 
     // Streaming
     public const string StreamingChannels = "/ISAPI/Streaming/channels";

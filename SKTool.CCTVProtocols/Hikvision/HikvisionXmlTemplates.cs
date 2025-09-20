@@ -38,24 +38,4 @@ public static class HikvisionXmlTemplates
         </reboot>
         """;
 
-    public static string NetworkInterfaceTemplate(int id) => $"""
-        <NetworkInterface>
-            <id>{id}</id>
-            <IPAddress>
-                <ipVersion>v4</ipVersion>
-                <addressingType>static</addressingType> <!-- static or dhcp -->
-                <ipAddress>192.168.1.64</ipAddress>
-                <subnetMask>255.255.255.0</subnetMask>
-                <DefaultGateway>
-                    <ipAddress>192.168.1.1</ipAddress>
-                </DefaultGateway>
-                <PrimaryDNS>
-                    <ipAddress>8.8.8.8</ipAddress>
-                </PrimaryDNS>
-                <SecondaryDNS>
-                    <ipAddress>8.8.4.4</ipAddress>
-                </SecondaryDNS>
-            </IPAddress>
-        </NetworkInterface>
-        """;
 }

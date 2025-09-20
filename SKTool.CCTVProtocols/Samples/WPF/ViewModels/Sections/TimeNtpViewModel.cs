@@ -123,12 +123,13 @@ public sealed class TimeNtpViewModel : ViewModelBase
             var timeDoc = await client.GetTimeAsync();
             var ns = timeDoc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
+            var resolvedTz = await ResolveTimeZoneAsync(client, TimeZone);
             SetOrAddNs(timeDoc.Root!, ns + "timeMode", "manual");
-            SetOrAddNs(timeDoc.Root!, ns + "timeZone", TimeZone);
+            SetOrAddNs(timeDoc.Root!, ns + "timeZone", resolvedTz);
 
             ApplyDstToTimeDocument(timeDoc.Root!, ns, DstMode);
 
-            // Some models expect UTC string, others local. Using UTC string is commonly accepted.
+            // Use UTC string which most firmwares accept
             SetOrAddNs(timeDoc.Root!, ns + "localTime", DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"));
 
             var resp = await client.SetTimeAsync(timeDoc);
@@ -153,10 +154,14 @@ public sealed class TimeNtpViewModel : ViewModelBase
             var timeDoc = await client.GetTimeAsync();
             var tns = timeDoc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
+            var resolvedTz = await ResolveTimeZoneAsync(client, TimeZone);
             SetOrAddNs(timeDoc.Root!, tns + "timeMode", "NTP");
-            SetOrAddNs(timeDoc.Root!, tns + "timeZone", TimeZone);
+            SetOrAddNs(timeDoc.Root!, tns + "timeZone", resolvedTz);
 
             ApplyDstToTimeDocument(timeDoc.Root!, tns, DstMode);
+
+            // Remove localTime when in NTP mode to avoid "invalid content" on some firmwares
+            timeDoc.Root!.Element(tns + "localTime")?.Remove();
 
             var r1 = await client.SetTimeAsync(timeDoc);
             RawTimeXml = r1.ToString();
@@ -177,6 +182,10 @@ public sealed class TimeNtpViewModel : ViewModelBase
                 server = new XElement(nns + "NTPServer");
                 ntpDoc.Root!.Add(server);
             }
+
+            // Ensure id exists (some firmwares require it)
+            if (server.Element(nns + "id") is null)
+                server.Add(new XElement(nns + "id", "1"));
 
             SetOrAddNs(server, nns + "addressingFormatType", "domain");
             SetOrAddNs(server, nns + "hostName", NtpHost);
@@ -212,16 +221,15 @@ public sealed class TimeNtpViewModel : ViewModelBase
     }
 
     // Applies DST using the correct schema for the device:
-    // - ver20 (xmlns contains "ver20"): <daylightSaving><enabled>true</enabled><startTime>...</startTime><endTime>...</endTime><offset>60</offset></daylightSaving>
-    // - legacy ver10: <dstMode>on|off</dstMode>
+    // - ver20 (xmlns contains "ver20") uses <daylightSaving>
+    // - legacy ver10 uses <dstMode>
     private static void ApplyDstToTimeDocument(XElement timeRoot, XNamespace ns, string dstMode)
     {
         var enable = dstMode.Equals("on", StringComparison.OrdinalIgnoreCase);
 
-        var isVer20 = (timeRoot.GetDefaultNamespace().NamespaceName?.IndexOf("ver20", StringComparison.OrdinalIgnoreCase) ?? -1) >= 0;
-        var hasDaylightSaving = timeRoot.Element(ns + "daylightSaving") is not null;
+        var isVer20 = HikvisionXml.IsVer20(timeRoot) || timeRoot.Element(ns + "daylightSaving") is not null;
 
-        if (isVer20 || hasDaylightSaving)
+        if (isVer20)
         {
             var ds = timeRoot.Element(ns + "daylightSaving");
             if (ds is null)
@@ -232,25 +240,31 @@ public sealed class TimeNtpViewModel : ViewModelBase
 
             SetOrAddNs(ds, ns + "enabled", enable ? "true" : "false");
 
-            // EU (Spain) DST: last Sunday of March 02:00 to last Sunday of October 03:00, offset 60
-            // Many Hikvision firmwares accept "M<month>.<week>.<day>/<HH:mm:ss>" format:
-            //   week 5 = last week, day 0 = Sunday
-            SetOrAddNs(ds, ns + "startTime", "M3.5.0/02:00:00");
-            SetOrAddNs(ds, ns + "endTime", "M10.5.0/03:00:00");
-            SetOrAddNs(ds, ns + "offset", "60");
+            // On many firmwares, when disabled, these must be absent to avoid "invalid content"
+            if (enable)
+            {
+                // EU (Spain) DST: last Sunday of March 02:00 to last Sunday of October 03:00, offset 60
+                SetOrAddNs(ds, ns + "startTime", "M3.5.0/02:00:00");
+                SetOrAddNs(ds, ns + "endTime", "M10.5.0/03:00:00");
+                SetOrAddNs(ds, ns + "offset", "60");
+            }
+            else
+            {
+                ds.Element(ns + "startTime")?.Remove();
+                ds.Element(ns + "endTime")?.Remove();
+                ds.Element(ns + "offset")?.Remove();
+            }
 
-            // Remove legacy node if present to avoid conflicts on some models
-            var legacy = timeRoot.Element(ns + "dstMode");
-            legacy?.Remove();
+            // Remove legacy node to avoid mixed-schema invalid content
+            timeRoot.Element(ns + "dstMode")?.Remove();
         }
         else
         {
-            // Legacy schema: keep it simple
+            // Legacy schema
             SetOrAddNs(timeRoot, ns + "dstMode", enable ? "on" : "off");
 
             // If device also had a 'daylightSaving' node, drop it to avoid "invalid content"
-            var ds = timeRoot.Element(ns + "daylightSaving");
-            ds?.Remove();
+            timeRoot.Element(ns + "daylightSaving")?.Remove();
         }
     }
 
@@ -266,5 +280,57 @@ public sealed class TimeNtpViewModel : ViewModelBase
         var el = parent.Element(name);
         if (el is null) parent.Add(el = new XElement(name));
         el.Value = value;
+    }
+
+    // Try to resolve a device-accepted timezone string from capabilities, falling back to preferred
+    private static async Task<string> ResolveTimeZoneAsync(HikvisionClient client, string preferred)
+    {
+        try
+        {
+            var caps = await client.GetTimeCapabilitiesAsync();
+            var ns = caps.Root?.GetDefaultNamespace() ?? XNamespace.None;
+
+            // Collect all possible timezone strings in capability doc
+            var list = new List<string>();
+            foreach (var el in caps.Descendants())
+            {
+                var name = el.Name.LocalName.ToLowerInvariant();
+                if (name is "timezone" or "timezoneitem" or "timezonevalue" or "name")
+                {
+                    var val = el.Value?.Trim();
+                    if (!string.IsNullOrEmpty(val)) list.Add(val);
+                }
+            }
+            if (list.Count == 0) return preferred;
+
+            // Exact match
+            var exact = list.FirstOrDefault(s => string.Equals(s, preferred, StringComparison.OrdinalIgnoreCase));
+            if (exact != null) return exact;
+
+            // Match by offset (e.g., +01:00)
+            var offset = preferred.Contains("+") || preferred.Contains("-")
+                ? preferred.Substring(preferred.IndexOf('U') >= 0 ? preferred.IndexOf('U') : 0) // crude, fallback to full string
+                : preferred;
+
+            var byOffset = list.FirstOrDefault(s => s.Contains("+01:00", StringComparison.OrdinalIgnoreCase) && preferred.Contains("+01:00"))
+                        ?? list.FirstOrDefault(s => s.Contains("-01:00", StringComparison.OrdinalIgnoreCase) && preferred.Contains("-01:00"));
+
+            if (byOffset != null) return byOffset;
+
+            // Common aliases for CET
+            if (preferred.Contains("+01:00"))
+            {
+                var cet = list.FirstOrDefault(s => s.Contains("CET", StringComparison.OrdinalIgnoreCase))
+                       ?? list.FirstOrDefault(s => s.Contains("GMT+01:00", StringComparison.OrdinalIgnoreCase))
+                       ?? list.FirstOrDefault(s => s.Contains("UTC+01:00", StringComparison.OrdinalIgnoreCase));
+                if (cet != null) return cet;
+            }
+
+            return preferred;
+        }
+        catch
+        {
+            return preferred;
+        }
     }
 }
