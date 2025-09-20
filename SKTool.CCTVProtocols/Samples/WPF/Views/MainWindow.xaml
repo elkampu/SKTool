@@ -1,0 +1,266 @@
+﻿<Window x:Class="SKTool.CCTVProtocols.Samples.WPF.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="Hikvision ISAPI Tool (.NET 8 WPF)" Height="800" Width="1200">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Connection -->
+        <GroupBox Header="Connection" Padding="8" Margin="0,0,0,8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="180"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="70"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="80"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="140"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="140"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Text="Host" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                <TextBox Grid.Column="1" Text="{Binding Host, UpdateSourceTrigger=PropertyChanged}" />
+
+                <TextBlock Grid.Column="2" Text="Port" VerticalAlignment="Center" Margin="12,0,6,0"/>
+                <TextBox Grid.Column="3" Text="{Binding Port, UpdateSourceTrigger=PropertyChanged}" />
+
+                <CheckBox Grid.Column="4" Content="HTTPS" IsChecked="{Binding UseHttps}" Margin="12,0,0,0" VerticalAlignment="Center"/>
+
+                <TextBlock Grid.Column="5" Text="User" VerticalAlignment="Center" Margin="12,0,6,0"/>
+                <TextBox Grid.Column="6" Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}" />
+
+                <TextBlock Grid.Column="7" Text="Password" VerticalAlignment="Center" Margin="12,0,6,0"/>
+                <PasswordBox Grid.Column="8" x:Name="PwdBox" PasswordChar="*" />
+                <CheckBox Grid.Column="9" Content="Prefer Digest" IsChecked="{Binding PreferDigest}" VerticalAlignment="Center" Margin="12,0,0,0"/>
+
+                <Button Grid.Column="10" Content="Apply Password" HorizontalAlignment="Right" Width="130" Click="ApplyPassword_Click" />
+            </Grid>
+        </GroupBox>
+
+        <!-- Main Content -->
+        <TabControl Grid.Row="1">
+            <!-- Configuration -->
+            <TabItem Header="Configuration">
+                <TabControl Margin="0,8,0,0">
+                    <!-- Network -->
+                    <TabItem Header="Network">
+                        <Grid Margin="8">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock Text="Interface ID:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                <TextBox Width="50" Text="{Binding NetworkVM.InterfaceId}" Margin="0,0,16,0"/>
+                                <CheckBox Content="Use DHCP" IsChecked="{Binding NetworkVM.UseDhcp}" VerticalAlignment="Center" Margin="0,0,16,0"/>
+                                <Button Content="Load" Command="{Binding NetworkVM.LoadCommand}" Margin="0,0,8,0"/>
+                                <Button Content="Apply" Command="{Binding NetworkVM.ApplyCommand}" Margin="0,0,8,0"/>
+                                <Button Content="View Response" Click="ViewNetworkResponse_Click"/>
+                            </StackPanel>
+
+                            <UniformGrid Grid.Row="1" Columns="6" Rows="2" Margin="0,0,0,8">
+                                <TextBlock Text="IPv4" VerticalAlignment="Center"/>
+                                <TextBox Text="{Binding NetworkVM.IPv4Address}"/>
+                                <TextBlock Text="Mask" VerticalAlignment="Center"/>
+                                <TextBox Text="{Binding NetworkVM.SubnetMask}"/>
+                                <TextBlock Text="Gateway" VerticalAlignment="Center"/>
+                                <TextBox Text="{Binding NetworkVM.Gateway}"/>
+
+                                <TextBlock Text="DNS 1" VerticalAlignment="Center"/>
+                                <TextBox Text="{Binding NetworkVM.PrimaryDNS}"/>
+                                <TextBlock Text="DNS 2" VerticalAlignment="Center"/>
+                                <TextBox Text="{Binding NetworkVM.SecondaryDNS}"/>
+                                <TextBlock/>
+                                <TextBlock/>
+                            </UniformGrid>
+                        </Grid>
+                    </TabItem>
+
+                    <!-- Time/NTP -->
+                    <TabItem Header="Time / NTP">
+                        <Grid Margin="8">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <Button Content="Load" Command="{Binding TimeNtpVM.LoadCommand}" Margin="0,0,8,0"/>
+                                <Button Content="Set Manual Time (UTC Now)" Command="{Binding TimeNtpVM.SetManualNowCommand}" Margin="0,0,8,0"/>
+                                <Button Content="Apply NTP" Command="{Binding TimeNtpVM.ApplyNtpCommand}" Margin="0,0,8,0"/>
+                                <Button Content="Set Spain TZ + DST" Command="{Binding TimeNtpVM.SetSpainTzCommand}" Margin="0,0,8,0"/>
+                                <Button Content="View Time Response" Click="ViewTimeResponse_Click" Margin="0,0,8,0"/>
+                                <Button Content="View NTP Response" Click="ViewNtpResponse_Click"/>
+                            </StackPanel>
+
+                            <UniformGrid Grid.Row="1" Columns="6" Rows="2" Margin="0,0,0,8">
+                                <TextBlock Text="Mode" VerticalAlignment="Center"/>
+                                <TextBox Text="{Binding TimeNtpVM.TimeMode}" IsReadOnly="True"/>
+                                <TextBlock Text="Device Time" VerticalAlignment="Center"/>
+                                <TextBox Text="{Binding TimeNtpVM.DeviceTime}" IsReadOnly="True"/>
+                                <TextBlock Text="Time Zone" VerticalAlignment="Center"/>
+                                <ComboBox ItemsSource="{Binding TimeNtpVM.AvailableTimeZones}"
+                                      SelectedItem="{Binding TimeNtpVM.TimeZone}"
+                                      MinWidth="130"/>
+
+                                <TextBlock Text="DST Mode" VerticalAlignment="Center"/>
+                                <TextBox Text="{Binding TimeNtpVM.DstMode}"/>
+                                <TextBlock Text="NTP Host" VerticalAlignment="Center"/>
+                                <TextBox Text="{Binding TimeNtpVM.NtpHost}"/>
+                                <TextBlock Text="NTP Port" VerticalAlignment="Center"/>
+                                <TextBox Text="{Binding TimeNtpVM.NtpPort}"/>
+                            </UniformGrid>
+
+                            <StackPanel Grid.Row="2" Orientation="Horizontal" VerticalAlignment="Top">
+                                <TextBlock Text="Sync Interval (minutes)" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                <TextBox Width="80" Text="{Binding TimeNtpVM.SyncIntervalMinutes}"/>
+                            </StackPanel>
+                        </Grid>
+                    </TabItem>
+
+                    <!-- Video -->
+                    <TabItem Header="Video (Main Stream)">
+                        <Grid Margin="8">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock Text="Channel Id" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                <TextBox Width="60" Text="{Binding VideoVM.ChannelId}" Margin="0,0,16,0"/>
+                                <Button Content="Load" Command="{Binding VideoVM.LoadCommand}" Margin="0,0,8,0"/>
+                                <Button Content="Apply" Command="{Binding VideoVM.ApplyCommand}" Margin="0,0,8,0"/>
+                                <Button Content="View Response" Click="ViewVideoResponse_Click"/>
+                            </StackPanel>
+
+                            <UniformGrid Grid.Row="1" Columns="6" Rows="2" Margin="0,0,0,8">
+                                <TextBlock Text="Codec" VerticalAlignment="Center"/>
+                                <ComboBox SelectedValuePath="Content"
+                                  SelectedValue="{Binding VideoVM.VideoCodecType}">
+                                    <ComboBoxItem Content="H.264"/>
+                                    <ComboBoxItem Content="H.265"/>
+                                    <ComboBoxItem Content="MJPEG"/>
+                                </ComboBox>
+
+                                <TextBlock Text="Bitrate Type" VerticalAlignment="Center"/>
+                                <ComboBox SelectedValuePath="Content"
+                                  SelectedValue="{Binding VideoVM.BitrateType}">
+                                    <ComboBoxItem Content="VBR"/>
+                                    <ComboBoxItem Content="CBR"/>
+                                </ComboBox>
+
+                                <TextBlock Text="Max FPS" VerticalAlignment="Center"/>
+                                <TextBox Text="{Binding VideoVM.MaxFrameRate}"/>
+
+                                <TextBlock Text="CBR (kbps)" VerticalAlignment="Center"/>
+                                <TextBox Text="{Binding VideoVM.ConstantBitRateKbps}"/>
+                                <TextBlock Text="VBR Upper (kbps)" VerticalAlignment="Center"/>
+                                <TextBox Text="{Binding VideoVM.VbrUpperCapKbps}"/>
+                            </UniformGrid>
+                        </Grid>
+                    </TabItem>
+                </TabControl>
+            </TabItem>
+
+            <!-- Operations -->
+            <TabItem Header="Operations">
+                <TabControl Margin="0,8,0,0">
+                    <!-- Device -->
+                    <TabItem Header="Device">
+                        <Grid Margin="8">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <Button Content="Get Device Info" Command="{Binding DeviceVM.GetDeviceInfoCommand}" Margin="0,0,8,0"/>
+                                <Button Content="Reboot" Command="{Binding DeviceVM.RebootCommand}" Margin="0,0,8,0"/>
+                                <Button Content="View Response" Click="ViewDeviceInfoResponse_Click"/>
+                            </StackPanel>
+                        </Grid>
+                    </TabItem>
+
+                    <!-- Snapshot -->
+                    <TabItem Header="Snapshot">
+                        <Grid Margin="8">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock Text="Channel Id" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                <TextBox Width="60" Text="{Binding SnapshotVM.ChannelId}" Margin="0,0,16,0"/>
+                                <Button Content="Capture" Command="{Binding SnapshotVM.CaptureCommand}" Margin="0,0,8,0"/>
+                                <Button Content="Save" Command="{Binding SnapshotVM.SaveCommand}"/>
+                            </StackPanel>
+
+                            <Border Grid.Row="1" BorderBrush="Gray" BorderThickness="1">
+                                <Image Source="{Binding SnapshotVM.Snapshot}" Stretch="Uniform"/>
+                            </Border>
+                        </Grid>
+                    </TabItem>
+
+                    <!-- Channels -->
+                    <TabItem Header="Channels">
+                        <Grid Margin="8">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <Button Content="Load" Command="{Binding ChannelsVM.LoadCommand}" Margin="0,0,8,0"/>
+                                <Button Content="View Response" Click="ViewChannelsResponse_Click"/>
+                            </StackPanel>
+
+                            <Grid Grid.Row="1">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="2*"/>
+                                    <ColumnDefinition Width="3*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <ListView Grid.Column="0" ItemsSource="{Binding ChannelsVM.Channels}">
+                                    <ListView.View>
+                                        <GridView>
+                                            <GridViewColumn Header="Id" DisplayMemberBinding="{Binding Id}" Width="80"/>
+                                            <GridViewColumn Header="Name" DisplayMemberBinding="{Binding Name}" Width="200"/>
+                                        </GridView>
+                                    </ListView.View>
+                                </ListView>
+                            </Grid>
+                        </Grid>
+                    </TabItem>
+                </TabControl>
+            </TabItem>
+        </TabControl>
+
+        <StatusBar Grid.Row="2">
+            <StatusBarItem>
+                <TextBlock Text="Hikvision ISAPI WPF - Configuration and Operations"/>
+            </StatusBarItem>
+        </StatusBar>
+    </Grid>
+</Window>
