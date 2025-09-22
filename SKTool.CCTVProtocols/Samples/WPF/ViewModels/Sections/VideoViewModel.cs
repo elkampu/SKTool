@@ -1,4 +1,4 @@
-﻿using System;
+﻿using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
 using SKTool.CCTVProtocols.Hikvision;
@@ -12,8 +12,8 @@ public sealed class VideoViewModel : ViewModelBase
     public VideoViewModel(Func<HikvisionClient> clientFactory)
     {
         _clientFactory = clientFactory;
-        LoadCommand = new AsyncRelayCommand(LoadAsync, () => !Busy);
-        ApplyCommand = new AsyncRelayCommand(ApplyAsync, () => !Busy);
+        LoadCommand = new AsyncRelayCommand(ct => LoadAsync(ct), () => !Busy);
+        ApplyCommand = new AsyncRelayCommand(ct => ApplyAsync(ct), () => !Busy);
     }
 
     private bool _busy;
@@ -43,13 +43,13 @@ public sealed class VideoViewModel : ViewModelBase
     public AsyncRelayCommand LoadCommand { get; }
     public AsyncRelayCommand ApplyCommand { get; }
 
-    public async Task LoadAsync()
+    public async Task LoadAsync(CancellationToken ct = default)
     {
         Busy = true;
         try
         {
             using var client = _clientFactory();
-            var x = await client.GetChannelXmlAsync(ChannelId);
+            var x = await client.GetChannelXmlAsync(ChannelId, ct);
             RawXml = x.ToString();
 
             var ns = x.Root?.GetDefaultNamespace() ?? XNamespace.None;
@@ -71,7 +71,7 @@ public sealed class VideoViewModel : ViewModelBase
         }
     }
 
-    public async Task ApplyAsync()
+    public async Task ApplyAsync(CancellationToken ct = default)
     {
         Busy = true;
         try
@@ -89,29 +89,22 @@ public sealed class VideoViewModel : ViewModelBase
                 xml.Root?.Add(vid);
             }
 
-            SetOrAdd(vid, ns + "videoCodecType", VideoCodecType);
-            SetOrAdd(vid, ns + "bitrateType", BitrateType);
-            SetOrAdd(vid, ns + "maxFrameRate", MaxFrameRate.ToString());
+            HikvisionXml.SetOrAdd(vid, ns + "videoCodecType", VideoCodecType);
+            HikvisionXml.SetOrAdd(vid, ns + "bitrateType", BitrateType);
+            HikvisionXml.SetOrAdd(vid, ns + "maxFrameRate", MaxFrameRate.ToString());
 
             if (BitrateType.Equals("CBR", StringComparison.OrdinalIgnoreCase))
-                SetOrAdd(vid, ns + "constantBitRate", ConstantBitRateKbps.ToString());
+                HikvisionXml.SetOrAdd(vid, ns + "constantBitRate", ConstantBitRateKbps.ToString());
             else
-                SetOrAdd(vid, ns + "vbrUpperCap", VbrUpperCapKbps.ToString());
+                HikvisionXml.SetOrAdd(vid, ns + "vbrUpperCap", VbrUpperCapKbps.ToString());
 
             using var client = _clientFactory();
-            var resp = await client.SetChannelXmlAsync(ChannelId, xml);
+            var resp = await client.SetChannelXmlAsync(ChannelId, xml, ct);
             RawXml = resp.ToString();
         }
         finally
         {
             Busy = false;
         }
-    }
-
-    private static void SetOrAdd(XElement parent, XName name, string value)
-    {
-        var el = parent.Element(name);
-        if (el is null) parent.Add(el = new XElement(name));
-        el.Value = value;
     }
 }

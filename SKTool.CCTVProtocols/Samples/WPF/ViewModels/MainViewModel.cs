@@ -1,7 +1,10 @@
 ﻿using System;
+using System.Threading;
 using System.Threading.Tasks;
-using System.Windows;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Debug;
 using SKTool.CCTVProtocols.Hikvision;
+using SKTool.CCTVProtocols.Logging;
 using SKTool.CCTVProtocols.Samples.WPF.Models;
 using SKTool.CCTVProtocols.Samples.WPF.Services;
 
@@ -9,6 +12,15 @@ namespace SKTool.CCTVProtocols.Samples.WPF.ViewModels;
 
 public sealed class MainViewModel : ViewModelBase
 {
+    private static readonly ILoggerFactory LoggerFactory =
+        Microsoft.Extensions.Logging.LoggerFactory.Create(builder =>
+        {
+            builder
+                .SetMinimumLevel(LogLevel.Information)
+                .AddDebug()
+                .AddProvider(new JsonFileLoggerProvider("Logs/sktool.log", maxBytes: 2 * 1024 * 1024, rollCount: 3));
+        });
+
     private readonly DeviceModel _device = new();
 
     public string Host { get => _device.Host; set { _device.Host = value; OnChanged(); } }
@@ -44,12 +56,14 @@ public sealed class MainViewModel : ViewModelBase
         try
         {
             var dev = _device.ToDevice();
+            var logger = LoggerFactory.CreateLogger<HikvisionClient>();
             return new HikvisionClient(
                 dev,
                 _device.PreferDigest,
                 timeout: TimeSpan.FromSeconds(20),
                 allowSelfSigned: true,
-                connectTimeout: TimeSpan.FromSeconds(60));
+                connectTimeout: TimeSpan.FromSeconds(60),
+                logger: logger);
         }
         catch (Exception ex)
         {
@@ -58,19 +72,25 @@ public sealed class MainViewModel : ViewModelBase
         }
     }
 
-    public async Task LoadAllAsync()
+    public async Task LoadAllAsync(CancellationToken ct = default)
     {
-        try { await NetworkVM.LoadAsync(); }
-        catch (Exception ex) { CameraErrorHandler.Handle(ex, "Load Network"); }
+        try { await NetworkVM.LoadAsync(ct); }
+        catch (Exception ex) when (Handle(ex, "Load Network")) { }
 
-        try { await TimeNtpVM.LoadAsync(); }
-        catch (Exception ex) { CameraErrorHandler.Handle(ex, "Load Time/NTP"); }
+        try { await TimeNtpVM.LoadAsync(ct); }
+        catch (Exception ex) when (Handle(ex, "Load Time/NTP")) { }
 
-        try { await VideoVM.LoadAsync(); }
-        catch (Exception ex) { CameraErrorHandler.Handle(ex, "Load Video"); }
+        try { await VideoVM.LoadAsync(ct); }
+        catch (Exception ex) when (Handle(ex, "Load Video")) { }
 
-        try { await ChannelsVM.LoadAsync(); }
-        catch (Exception ex) { CameraErrorHandler.Handle(ex, "Load Channels"); }
+        try { await ChannelsVM.LoadAsync(ct); }
+        catch (Exception ex) when (Handle(ex, "Load Channels")) { }
+    }
+
+    private static bool Handle(Exception ex, string ctx)
+    {
+        CameraErrorHandler.Handle(ex, ctx);
+        return true;
     }
 
     private void OnChanged() { }

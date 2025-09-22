@@ -4,7 +4,8 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
-        Title="Hikvision ISAPI Tool (.NET 8 WPF)" Height="800" Width="1200">
+        Title="Hikvision ISAPI Tool (.NET 8 WPF)" Height="820" Width="1220">
+
     <Grid Margin="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -22,6 +23,8 @@
                     <ColumnDefinition Width="70"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="80"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="140"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="140"/>
                     <ColumnDefinition Width="Auto"/>
@@ -45,6 +48,7 @@
                 <CheckBox Grid.Column="9" Content="Prefer Digest" IsChecked="{Binding PreferDigest}" VerticalAlignment="Center" Margin="12,0,0,0"/>
 
                 <Button Grid.Column="10" Content="Apply Password" HorizontalAlignment="Right" Width="130" Click="ApplyPassword_Click" />
+                <Button Grid.Column="11" Content="Cancel All" HorizontalAlignment="Right" Width="130" Click="CancelAll_Click" Margin="8,0,0,0"/>
             </Grid>
         </GroupBox>
 
@@ -59,8 +63,6 @@
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="*"/>
                             </Grid.RowDefinitions>
 
@@ -70,6 +72,7 @@
                                 <CheckBox Content="Use DHCP" IsChecked="{Binding NetworkVM.UseDhcp}" VerticalAlignment="Center" Margin="0,0,16,0"/>
                                 <Button Content="Load" Command="{Binding NetworkVM.LoadCommand}" Margin="0,0,8,0"/>
                                 <Button Content="Apply" Command="{Binding NetworkVM.ApplyCommand}" Margin="0,0,8,0"/>
+                                <Button Content="Cancel" Click="CancelNetwork_Click" Margin="0,0,8,0"/>
                                 <Button Content="View Response" Click="ViewNetworkResponse_Click"/>
                             </StackPanel>
 
@@ -106,6 +109,7 @@
                                 <Button Content="Set Manual Time (UTC Now)" Command="{Binding TimeNtpVM.SetManualNowCommand}" Margin="0,0,8,0"/>
                                 <Button Content="Apply NTP" Command="{Binding TimeNtpVM.ApplyNtpCommand}" Margin="0,0,8,0"/>
                                 <Button Content="Set Spain TZ + DST" Command="{Binding TimeNtpVM.SetSpainTzCommand}" Margin="0,0,8,0"/>
+                                <Button Content="Cancel" Click="CancelTime_Click" Margin="0,0,8,0"/>
                                 <Button Content="View Time Response" Click="ViewTimeResponse_Click" Margin="0,0,8,0"/>
                                 <Button Content="View NTP Response" Click="ViewNtpResponse_Click"/>
                             </StackPanel>
@@ -149,6 +153,7 @@
                                 <TextBox Width="60" Text="{Binding VideoVM.ChannelId}" Margin="0,0,16,0"/>
                                 <Button Content="Load" Command="{Binding VideoVM.LoadCommand}" Margin="0,0,8,0"/>
                                 <Button Content="Apply" Command="{Binding VideoVM.ApplyCommand}" Margin="0,0,8,0"/>
+                                <Button Content="Cancel" Click="CancelVideo_Click" Margin="0,0,8,0"/>
                                 <Button Content="View Response" Click="ViewVideoResponse_Click"/>
                             </StackPanel>
 
@@ -189,13 +194,13 @@
                         <Grid Margin="8">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="*"/>
                             </Grid.RowDefinitions>
 
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                 <Button Content="Get Device Info" Command="{Binding DeviceVM.GetDeviceInfoCommand}" Margin="0,0,8,0"/>
                                 <Button Content="Reboot" Command="{Binding DeviceVM.RebootCommand}" Margin="0,0,8,0"/>
+                                <Button Content="Cancel" Click="CancelDevice_Click" Margin="0,0,8,0"/>
                                 <Button Content="View Response" Click="ViewDeviceInfoResponse_Click"/>
                             </StackPanel>
                         </Grid>
@@ -214,6 +219,7 @@
                                 <TextBlock Text="Channel Id" VerticalAlignment="Center" Margin="0,0,8,0"/>
                                 <TextBox Width="60" Text="{Binding SnapshotVM.ChannelId}" Margin="0,0,16,0"/>
                                 <Button Content="Capture" Command="{Binding SnapshotVM.CaptureCommand}" Margin="0,0,8,0"/>
+                                <Button Content="Cancel" Click="CancelSnapshot_Click" Margin="0,0,8,0"/>
                                 <Button Content="Save" Command="{Binding SnapshotVM.SaveCommand}"/>
                             </StackPanel>
 
@@ -233,6 +239,7 @@
 
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                 <Button Content="Load" Command="{Binding ChannelsVM.LoadCommand}" Margin="0,0,8,0"/>
+                                <Button Content="Cancel" Click="CancelChannels_Click" Margin="0,0,8,0"/>
                                 <Button Content="View Response" Click="ViewChannelsResponse_Click"/>
                             </StackPanel>
 

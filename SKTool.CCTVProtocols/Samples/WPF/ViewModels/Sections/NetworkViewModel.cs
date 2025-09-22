@@ -1,6 +1,6 @@
 ﻿using SKTool.CCTVProtocols.Hikvision;
 using System;
-using System.Net.Http;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
 
@@ -13,8 +13,8 @@ public sealed class NetworkViewModel : ViewModelBase
     public NetworkViewModel(Func<HikvisionClient> clientFactory)
     {
         _clientFactory = clientFactory;
-        LoadCommand = new AsyncRelayCommand(LoadAsync, () => !Busy);
-        ApplyCommand = new AsyncRelayCommand(ApplyAsync, () => !Busy);
+        LoadCommand = new AsyncRelayCommand(ct => LoadAsync(ct), () => !Busy);
+        ApplyCommand = new AsyncRelayCommand(ct => ApplyAsync(ct), () => !Busy);
     }
 
     private bool _busy;
@@ -47,13 +47,13 @@ public sealed class NetworkViewModel : ViewModelBase
     public AsyncRelayCommand LoadCommand { get; }
     public AsyncRelayCommand ApplyCommand { get; }
 
-    public async Task LoadAsync()
+    public async Task LoadAsync(CancellationToken ct = default)
     {
         Busy = true;
         try
         {
             using var client = _clientFactory();
-            var x = await client.GetNetworkInterfaceAsync(InterfaceId);
+            var x = await client.GetNetworkInterfaceAsync(InterfaceId, ct);
             RawXml = x.ToString();
 
             var ns = x.Root?.GetDefaultNamespace() ?? XNamespace.None;
@@ -74,23 +74,20 @@ public sealed class NetworkViewModel : ViewModelBase
         }
     }
 
-    public async Task ApplyAsync()
+    public async Task ApplyAsync(CancellationToken ct = default)
     {
         Busy = true;
         try
         {
             using var client = _clientFactory();
 
-            // Fetch current to get the correct namespace and attributes (e.g., version)
-            var current = await client.GetNetworkInterfaceAsync(InterfaceId);
+            var current = await client.GetNetworkInterfaceAsync(InterfaceId, ct);
             var ns = current.Root?.GetDefaultNamespace() ?? XNamespace.None;
             var currentIp = current.Root?.Element(ns + "IPAddress");
 
-            // Build only the IPAddress node
             var ipDoc = new XDocument(new XElement(ns + "IPAddress"));
             var ip = ipDoc.Root!;
 
-            // Preserve any existing attributes on IPAddress (e.g., version="2.0")
             if (currentIp != null)
             {
                 foreach (var attr in currentIp.Attributes())
@@ -99,20 +96,19 @@ public sealed class NetworkViewModel : ViewModelBase
                 }
             }
 
-            SetOrAdd(ip, ns + "ipVersion", "v4");
-            SetOrAdd(ip, ns + "addressingType", UseDhcp ? "dhcp" : "static");
+            HikvisionXml.SetOrAdd(ip, ns + "ipVersion", "v4");
+            HikvisionXml.SetOrAdd(ip, ns + "addressingType", UseDhcp ? "dhcp" : "static");
 
             if (!UseDhcp)
             {
-                SetOrAdd(ip, ns + "ipAddress", IPv4Address);
-                SetOrAdd(ip, ns + "subnetMask", SubnetMask);
-                EnsurePath(ip, ns + "DefaultGateway", ns + "ipAddress", Gateway);
-                EnsurePath(ip, ns + "PrimaryDNS", ns + "ipAddress", PrimaryDNS);
-                EnsurePath(ip, ns + "SecondaryDNS", ns + "ipAddress", SecondaryDNS);
+                HikvisionXml.SetOrAdd(ip, ns + "ipAddress", IPv4Address);
+                HikvisionXml.SetOrAdd(ip, ns + "subnetMask", SubnetMask);
+                HikvisionXml.EnsurePath(ip, ns + "DefaultGateway", ns + "ipAddress", Gateway);
+                HikvisionXml.EnsurePath(ip, ns + "PrimaryDNS", ns + "ipAddress", PrimaryDNS);
+                HikvisionXml.EnsurePath(ip, ns + "SecondaryDNS", ns + "ipAddress", SecondaryDNS);
             }
             else
             {
-                // Ensure static-only fields are not present when DHCP is used
                 ip.Element(ns + "ipAddress")?.Remove();
                 ip.Element(ns + "subnetMask")?.Remove();
                 ip.Element(ns + "DefaultGateway")?.Remove();
@@ -120,40 +116,15 @@ public sealed class NetworkViewModel : ViewModelBase
                 ip.Element(ns + "SecondaryDNS")?.Remove();
             }
 
-            var resp = await client.SetNetworkInterfaceIpAddressAsync(InterfaceId, ipDoc);
+            var resp = await client.SetNetworkInterfaceIpAddressAsync(InterfaceId, ipDoc, ct);
             RawXml = resp.ToString();
 
-            // Refresh the full interface
-            var refreshed = await client.GetNetworkInterfaceAsync(InterfaceId);
+            var refreshed = await client.GetNetworkInterfaceAsync(InterfaceId, ct);
             RawXml = refreshed.ToString();
         }
         finally
         {
             Busy = false;
         }
-    }
-
-    private static void SetOrAdd(XElement parent, XName name, string value)
-    {
-        var el = parent.Element(name);
-        if (el is null) parent.Add(el = new XElement(name));
-        el.Value = value;
-    }
-
-    private static void EnsurePath(XElement parent, XName container, XName leaf, string value)
-    {
-        var c = parent.Element(container);
-        if (c is null)
-        {
-            c = new XElement(container);
-            parent.Add(c);
-        }
-        var l = c.Element(leaf);
-        if (l is null)
-        {
-            l = new XElement(leaf);
-            c.Add(l);
-        }
-        l.Value = value;
     }
 }

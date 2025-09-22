@@ -1,7 +1,11 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
 using SKTool.CCTVProtocols.Hikvision;
+using SKTool.CCTVProtocols.Hikvision.Models;
 
 namespace SKTool.CCTVProtocols.Samples.WPF.ViewModels;
 
@@ -12,10 +16,10 @@ public sealed class TimeNtpViewModel : ViewModelBase
     public TimeNtpViewModel(Func<HikvisionClient> clientFactory)
     {
         _clientFactory = clientFactory;
-        LoadCommand = new AsyncRelayCommand(LoadAsync, () => !Busy);
-        SetManualNowCommand = new AsyncRelayCommand(SetManualNowAsync, () => !Busy);
-        ApplyNtpCommand = new AsyncRelayCommand(ApplyNtpAsync, () => !Busy);
-        SetSpainTzCommand = new AsyncRelayCommand(SetSpainTzAsync, () => !Busy);
+        LoadCommand = new AsyncRelayCommand(ct => LoadAsync(ct), () => !Busy);
+        SetManualNowCommand = new AsyncRelayCommand(ct => SetManualNowAsync(ct), () => !Busy);
+        ApplyNtpCommand = new AsyncRelayCommand(ct => ApplyNtpAsync(ct), () => !Busy);
+        SetSpainTzCommand = new AsyncRelayCommand(ct => SetSpainTzAsync(ct), () => !Busy);
     }
 
     private bool _busy;
@@ -30,7 +34,6 @@ public sealed class TimeNtpViewModel : ViewModelBase
     public string TimeZone { get => _tz; set => Set(ref _tz, value); }
     private string _tz = "UTC+00:00";
 
-    // UI flag, mapped to device schemas
     public string DstMode { get => _dst; set => Set(ref _dst, value); }
     private string _dst = "off"; // "on" or "off"
 
@@ -63,50 +66,28 @@ public sealed class TimeNtpViewModel : ViewModelBase
     public AsyncRelayCommand ApplyNtpCommand { get; }
     public AsyncRelayCommand SetSpainTzCommand { get; }
 
-    public async Task LoadAsync()
+    public async Task LoadAsync(CancellationToken ct = default)
     {
         Busy = true;
         try
         {
             using var client = _clientFactory();
-            var t = await client.GetTimeAsync();
+            var t = await client.GetTimeAsync(ct);
             RawTimeXml = t.ToString();
 
-            var tns = t.Root?.GetDefaultNamespace() ?? XNamespace.None;
+            var cfg = TimeConfig.FromXml(t);
+            TimeMode = cfg.TimeMode;
+            DeviceTime = cfg.LocalTime;
+            TimeZone = cfg.TimeZone;
+            DstMode = cfg.DstEnabled ? "on" : "off";
 
-            TimeMode = t.Root?.Element(tns + "timeMode")?.Value ?? TimeMode;
-            DeviceTime = t.Root?.Element(tns + "localTime")?.Value ?? DeviceTime;
-            TimeZone = t.Root?.Element(tns + "timeZone")?.Value ?? TimeZone;
-
-            // Read DST in either schema
-            var ds = t.Root?.Element(tns + "daylightSaving");
-            if (ds != null)
-            {
-                var enabled = ds.Element(tns + "enabled")?.Value?.Equals("true", StringComparison.OrdinalIgnoreCase) == true;
-                DstMode = enabled ? "on" : "off";
-            }
-            else
-            {
-                var dstEl = t.Root?.Element(tns + "dstMode");
-                if (dstEl != null)
-                    DstMode = dstEl.Value;
-            }
-
-            var ntp = await client.GetNtpServersAsync();
+            var ntp = await client.GetNtpServersAsync(ct);
             RawNtpXml = ntp.ToString();
 
-            var nns = ntp.Root?.GetDefaultNamespace() ?? XNamespace.None;
-            var first = ntp.Root?.Element(nns + "NTPServer")
-                        ?? ntp.Root?.Element(nns + "NTPServers")?.Element(nns + "NTPServer");
-            if (first is not null)
-            {
-                NtpHost = first.Element(nns + "hostName")?.Value
-                          ?? first.Element(nns + "ipV4Address")?.Value
-                          ?? first.Element(nns + "ipAddress")?.Value
-                          ?? NtpHost;
-                if (int.TryParse(first.Element(nns + "portNo")?.Value, out var p)) NtpPort = p;
-                if (int.TryParse(first.Element(nns + "synchronizeInterval")?.Value, out var s)) SyncIntervalMinutes = s;
-            }
+            var s = NtpServerListXml.ReadFirst(ntp);
+            NtpHost = s.HostName;
+            NtpPort = s.Port;
+            SyncIntervalMinutes = s.SyncIntervalMinutes;
         }
         finally
         {
@@ -114,28 +95,32 @@ public sealed class TimeNtpViewModel : ViewModelBase
         }
     }
 
-    public async Task SetManualNowAsync()
+    public async Task SetManualNowAsync(CancellationToken ct = default)
     {
         Busy = true;
         try
         {
             using var client = _clientFactory();
-            var timeDoc = await client.GetTimeAsync();
-            var ns = timeDoc.Root?.GetDefaultNamespace() ?? XNamespace.None;
+            var timeDoc = await client.GetTimeAsync(ct);
+            var cfg = TimeConfig.FromXml(timeDoc);
 
-            var resolvedTz = await ResolveTimeZoneAsync(client, TimeZone);
-            SetOrAddNs(timeDoc.Root!, ns + "timeMode", "manual");
-            SetOrAddNs(timeDoc.Root!, ns + "timeZone", resolvedTz);
+            var resolvedTz = await ResolveTimeZoneAsync(client, TimeZone, ct);
+            cfg.TimeMode = "manual";
+            cfg.TimeZone = resolvedTz;
+            cfg.DstEnabled = DstMode.Equals("on", StringComparison.OrdinalIgnoreCase);
+            if (cfg.DstEnabled)
+            {
+                cfg.DstStartTime = "M3.5.0/02:00:00";
+                cfg.DstEndTime = "M10.5.0/03:00:00";
+                cfg.DstOffsetMinutes = 60;
+            }
+            cfg.LocalTime = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
 
-            ApplyDstToTimeDocument(timeDoc.Root!, ns, DstMode);
-
-            // Use UTC string which most firmwares accept
-            SetOrAddNs(timeDoc.Root!, ns + "localTime", DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"));
-
-            var resp = await client.SetTimeAsync(timeDoc);
+            cfg.ApplyTo(timeDoc);
+            var resp = await client.SetTimeAsync(timeDoc, ct);
             RawTimeXml = resp.ToString();
 
-            await LoadAsync();
+            await LoadAsync(ct);
         }
         finally
         {
@@ -143,60 +128,45 @@ public sealed class TimeNtpViewModel : ViewModelBase
         }
     }
 
-    public async Task ApplyNtpAsync()
+    public async Task ApplyNtpAsync(CancellationToken ct = default)
     {
         Busy = true;
         try
         {
             using var client = _clientFactory();
 
-            // Update time mode/TZ/DST using device's current XML (preserve namespace)
-            var timeDoc = await client.GetTimeAsync();
-            var tns = timeDoc.Root?.GetDefaultNamespace() ?? XNamespace.None;
+            var timeDoc = await client.GetTimeAsync(ct);
+            var cfg = TimeConfig.FromXml(timeDoc);
 
-            var resolvedTz = await ResolveTimeZoneAsync(client, TimeZone);
-            SetOrAddNs(timeDoc.Root!, tns + "timeMode", "NTP");
-            SetOrAddNs(timeDoc.Root!, tns + "timeZone", resolvedTz);
-
-            ApplyDstToTimeDocument(timeDoc.Root!, tns, DstMode);
-
-            // Remove localTime when in NTP mode to avoid "invalid content" on some firmwares
-            timeDoc.Root!.Element(tns + "localTime")?.Remove();
-
-            var r1 = await client.SetTimeAsync(timeDoc);
-            RawTimeXml = r1.ToString();
-
-            // Update NTP server list preserving namespace
-            var ntpDoc = await client.GetNtpServersAsync();
-            var nns = ntpDoc.Root?.GetDefaultNamespace() ?? XNamespace.None;
-
-            var server = ntpDoc.Root?.Element(nns + "NTPServer")
-                         ?? ntpDoc.Root?.Element(nns + "NTPServers")?.Element(nns + "NTPServer");
-
-            if (server is null)
+            var resolvedTz = await ResolveTimeZoneAsync(client, TimeZone, ct);
+            cfg.TimeMode = "NTP";
+            cfg.TimeZone = resolvedTz;
+            cfg.DstEnabled = DstMode.Equals("on", StringComparison.OrdinalIgnoreCase);
+            if (cfg.DstEnabled)
             {
-                if (ntpDoc.Root is null)
-                {
-                    ntpDoc.Add(new XElement(nns + "NTPServerList"));
-                }
-                server = new XElement(nns + "NTPServer");
-                ntpDoc.Root!.Add(server);
+                cfg.DstStartTime = "M3.5.0/02:00:00";
+                cfg.DstEndTime = "M10.5.0/03:00:00";
+                cfg.DstOffsetMinutes = 60;
             }
 
-            // Ensure id exists (some firmwares require it)
-            if (server.Element(nns + "id") is null)
-                server.Add(new XElement(nns + "id", "1"));
+            cfg.ApplyTo(timeDoc);
+            var r1 = await client.SetTimeAsync(timeDoc, ct);
+            RawTimeXml = r1.ToString();
 
-            SetOrAddNs(server, nns + "addressingFormatType", "domain");
-            SetOrAddNs(server, nns + "hostName", NtpHost);
-            SetOrAddNs(server, nns + "portNo", NtpPort.ToString());
-            SetOrAddNs(server, nns + "synchronizeInterval", SyncIntervalMinutes.ToString());
-            SetOrAddNs(server, nns + "enabled", "true");
+            var ntpDoc = await client.GetNtpServersAsync(ct);
+            var s = new NtpServer
+            {
+                HostName = NtpHost,
+                Port = NtpPort,
+                SyncIntervalMinutes = SyncIntervalMinutes,
+                Enabled = true
+            };
+            NtpServerListXml.WriteFirst(ntpDoc, s);
 
-            var r2 = await client.SetNtpServersAsync(ntpDoc);
+            var r2 = await client.SetNtpServersAsync(ntpDoc, ct);
             RawNtpXml = r2.ToString();
 
-            await LoadAsync();
+            await LoadAsync(ct);
         }
         finally
         {
@@ -204,15 +174,14 @@ public sealed class TimeNtpViewModel : ViewModelBase
         }
     }
 
-    // Set Spain: CET (UTC+01:00) with DST on and EU rules
-    public async Task SetSpainTzAsync()
+    public async Task SetSpainTzAsync(CancellationToken ct = default)
     {
         Busy = true;
         try
         {
             TimeZone = "UTC+01:00"; // CET base
             DstMode = "on";         // Enable DST
-            await ApplyNtpAsync();
+            await ApplyNtpAsync(ct);
         }
         finally
         {
@@ -220,77 +189,11 @@ public sealed class TimeNtpViewModel : ViewModelBase
         }
     }
 
-    // Applies DST using the correct schema for the device:
-    // - ver20 (xmlns contains "ver20") uses <daylightSaving>
-    // - legacy ver10 uses <dstMode>
-    private static void ApplyDstToTimeDocument(XElement timeRoot, XNamespace ns, string dstMode)
-    {
-        var enable = dstMode.Equals("on", StringComparison.OrdinalIgnoreCase);
-
-        var isVer20 = HikvisionXml.IsVer20(timeRoot) || timeRoot.Element(ns + "daylightSaving") is not null;
-
-        if (isVer20)
-        {
-            var ds = timeRoot.Element(ns + "daylightSaving");
-            if (ds is null)
-            {
-                ds = new XElement(ns + "daylightSaving");
-                timeRoot.Add(ds);
-            }
-
-            SetOrAddNs(ds, ns + "enabled", enable ? "true" : "false");
-
-            // On many firmwares, when disabled, these must be absent to avoid "invalid content"
-            if (enable)
-            {
-                // EU (Spain) DST: last Sunday of March 02:00 to last Sunday of October 03:00, offset 60
-                SetOrAddNs(ds, ns + "startTime", "M3.5.0/02:00:00");
-                SetOrAddNs(ds, ns + "endTime", "M10.5.0/03:00:00");
-                SetOrAddNs(ds, ns + "offset", "60");
-            }
-            else
-            {
-                ds.Element(ns + "startTime")?.Remove();
-                ds.Element(ns + "endTime")?.Remove();
-                ds.Element(ns + "offset")?.Remove();
-            }
-
-            // Remove legacy node to avoid mixed-schema invalid content
-            timeRoot.Element(ns + "dstMode")?.Remove();
-        }
-        else
-        {
-            // Legacy schema
-            SetOrAddNs(timeRoot, ns + "dstMode", enable ? "on" : "off");
-
-            // If device also had a 'daylightSaving' node, drop it to avoid "invalid content"
-            timeRoot.Element(ns + "daylightSaving")?.Remove();
-        }
-    }
-
-    private static void SetOrAdd(XElement parent, string name, string value)
-    {
-        var el = parent.Element(name);
-        if (el is null) parent.Add(el = new XElement(name));
-        el.Value = value;
-    }
-
-    private static void SetOrAddNs(XElement parent, XName name, string value)
-    {
-        var el = parent.Element(name);
-        if (el is null) parent.Add(el = new XElement(name));
-        el.Value = value;
-    }
-
-    // Try to resolve a device-accepted timezone string from capabilities, falling back to preferred
-    private static async Task<string> ResolveTimeZoneAsync(HikvisionClient client, string preferred)
+    private static async Task<string> ResolveTimeZoneAsync(HikvisionClient client, string preferred, CancellationToken ct)
     {
         try
         {
-            var caps = await client.GetTimeCapabilitiesAsync();
-            var ns = caps.Root?.GetDefaultNamespace() ?? XNamespace.None;
-
-            // Collect all possible timezone strings in capability doc
+            var caps = await client.GetTimeCapabilitiesAsync(ct);
             var list = new List<string>();
             foreach (var el in caps.Descendants())
             {
@@ -303,22 +206,10 @@ public sealed class TimeNtpViewModel : ViewModelBase
             }
             if (list.Count == 0) return preferred;
 
-            // Exact match
             var exact = list.FirstOrDefault(s => string.Equals(s, preferred, StringComparison.OrdinalIgnoreCase));
             if (exact != null) return exact;
 
-            // Match by offset (e.g., +01:00)
-            var offset = preferred.Contains("+") || preferred.Contains("-")
-                ? preferred.Substring(preferred.IndexOf('U') >= 0 ? preferred.IndexOf('U') : 0) // crude, fallback to full string
-                : preferred;
-
-            var byOffset = list.FirstOrDefault(s => s.Contains("+01:00", StringComparison.OrdinalIgnoreCase) && preferred.Contains("+01:00"))
-                        ?? list.FirstOrDefault(s => s.Contains("-01:00", StringComparison.OrdinalIgnoreCase) && preferred.Contains("-01:00"));
-
-            if (byOffset != null) return byOffset;
-
-            // Common aliases for CET
-            if (preferred.Contains("+01:00"))
+            if (preferred.Contains("+01:00", StringComparison.OrdinalIgnoreCase))
             {
                 var cet = list.FirstOrDefault(s => s.Contains("CET", StringComparison.OrdinalIgnoreCase))
                        ?? list.FirstOrDefault(s => s.Contains("GMT+01:00", StringComparison.OrdinalIgnoreCase))

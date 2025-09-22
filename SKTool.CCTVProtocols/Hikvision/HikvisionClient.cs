@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography;
@@ -6,6 +7,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
+using Microsoft.Extensions.Logging;
 
 namespace SKTool.CCTVProtocols.Hikvision;
 
@@ -15,16 +17,21 @@ public sealed class HikvisionClient : IDisposable
     private readonly HttpClient _http;
     private readonly SocketsHttpHandler _baseHandler;
     private readonly bool _preferDigest;
+    private readonly ILogger _logger;
+
+    private const int MaxRetries = 3;
 
     public HikvisionClient(
         HikvisionDevice device,
         bool preferDigest = true,
         TimeSpan? timeout = null,
         bool allowSelfSigned = true,
-        TimeSpan? connectTimeout = null)
+        TimeSpan? connectTimeout = null,
+        ILogger? logger = null)
     {
         _device = device;
         _preferDigest = preferDigest;
+        _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<HikvisionClient>.Instance;
 
         _baseHandler = new SocketsHttpHandler
         {
@@ -74,21 +81,28 @@ public sealed class HikvisionClient : IDisposable
     // Attempt IPAddress endpoints with fallback to full NetworkInterface PUT if needed
     public async Task<XDocument> SetNetworkInterfaceIpAddressAsync(int id, XDocument ipAddressXml, CancellationToken ct = default)
     {
-        // Try lowercase endpoint (commonly seen in ISAPI examples)
         try
         {
+            using var scope = _logger.BeginScope(new System.Collections.Generic.Dictionary<string, object?>
+            {
+                ["device"] = _device.Url.Host,
+                ["ifaceId"] = id,
+                ["op"] = "SetIpAddress"
+            });
+            _logger.LogInformation("Setting IP address via lowercase endpoint for interface {Id}", id);
             return await PutXmlAsync(HikvisionConstants.NetworkInterfaceIpAddressLower(id), ipAddressXml, ct).ConfigureAwait(false);
         }
         catch (HikvisionIsapiException ex) when (IsRetryWorthy(ex))
         {
-            // Try uppercase (observed in some firmwares)
+            _logger.LogWarning(ex, "Lowercase endpoint failed, trying uppercase for interface {Id}", id);
             try
             {
                 return await PutXmlAsync(HikvisionConstants.NetworkInterfaceIpAddressUpper(id), ipAddressXml, ct).ConfigureAwait(false);
             }
             catch (HikvisionIsapiException ex2) when (IsRetryWorthy(ex2))
             {
-                // Fallback: PUT the entire NetworkInterface envelope with the provided IPAddress node merged in
+                _logger.LogWarning(ex2, "Uppercase endpoint failed, falling back to full NetworkInterface PUT for interface {Id}", id);
+
                 var current = await GetNetworkInterfaceAsync(id, ct).ConfigureAwait(false);
                 var ns = current.Root?.GetDefaultNamespace() ?? XNamespace.None;
                 var root = current.Root ?? new XElement(ns + "NetworkInterface");
@@ -108,7 +122,7 @@ public sealed class HikvisionClient : IDisposable
 
     private static bool IsRetryWorthy(HikvisionIsapiException ex)
     {
-        // 400 invalid content, 404 not found, 405 method not allowed, 415 unsupported media type
+        // 400 invalid content, 404 not found, 405 method not allowed, 415 unsupported media type, 501 not implemented
         return ex.HttpStatus == 400 || ex.HttpStatus == 404 || ex.HttpStatus == 405 || ex.HttpStatus == 415 || ex.HttpStatus == 501;
     }
 
@@ -138,10 +152,10 @@ public sealed class HikvisionClient : IDisposable
     // Internals
     private async Task<XDocument> SendXmlAsync(HttpMethod method, string path, XDocument? body, CancellationToken ct)
     {
-        var (resp, content) = await SendAsync(method, path, body, HikvisionConstants.XmlMediaType, ct).ConfigureAwait(false);
+        var (status, reason, content) = await SendAsync(method, path, body, HikvisionConstants.XmlMediaType, ct).ConfigureAwait(false);
 
-        if (!resp.IsSuccessStatusCode)
-            ThrowIsapiException(resp, content);
+        if ((int)status < 200 || (int)status >= 300)
+            ThrowIsapiException(status, reason, content);
 
         if (string.IsNullOrWhiteSpace(content))
             return XDocument.Parse("<Response/>");
@@ -152,94 +166,208 @@ public sealed class HikvisionClient : IDisposable
     private async Task<byte[]> SendBytesAsync(HttpMethod method, string path, string? accept, CancellationToken ct)
     {
         var uri = _device.Url.Build(path);
+        var corr = Guid.NewGuid().ToString("N");
 
-        using var req = new HttpRequestMessage(method, uri);
-        if (!_preferDigest)
+        using var scope = _logger.BeginScope(new System.Collections.Generic.Dictionary<string, object?>
         {
-            var basic = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_device.Username}:{_device.Password}"));
-            req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", basic);
-        }
-        if (!string.IsNullOrEmpty(accept))
-            req.Headers.Accept.ParseAdd(accept);
+            ["device"] = _device.Url.Host,
+            ["path"] = uri.PathAndQuery,
+            ["corr"] = corr
+        });
 
-        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
-
-        if (resp.StatusCode == HttpStatusCode.Unauthorized && _preferDigest)
+        for (int attempt = 1; attempt <= MaxRetries; attempt++)
         {
-            var challenge = GetDigestChallengeHeader(resp.Headers.WwwAuthenticate);
-            if (challenge is not null)
+            var sw = Stopwatch.StartNew();
+            try
             {
-                using var retry = new HttpRequestMessage(method, uri);
-                if (!string.IsNullOrEmpty(accept))
-                    retry.Headers.Accept.ParseAdd(accept);
-                retry.Headers.Authorization = BuildDigestAuthHeader(challenge, method.Method, uri.PathAndQuery);
-                using var retryResp = await _http.SendAsync(retry, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
-                if (!retryResp.IsSuccessStatusCode)
+                using var req = new HttpRequestMessage(method, uri);
+                if (!_preferDigest)
                 {
-                    var err = await retryResp.Content.ReadAsStringAsync().ConfigureAwait(false);
-                    ThrowIsapiException(retryResp, err);
+                    var basic = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_device.Username}:{_device.Password}"));
+                    req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", basic);
                 }
-                return await retryResp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(accept))
+                    req.Headers.Accept.ParseAdd(accept);
+
+                _logger.LogDebug("Request attempt {Attempt}: {Method} {Uri} Accept={Accept}", attempt, method, uri, accept);
+
+                using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
+
+                if (resp.StatusCode == HttpStatusCode.Unauthorized && _preferDigest)
+                {
+                    var challenge = GetDigestChallengeHeader(resp.Headers.WwwAuthenticate);
+                    if (challenge is not null)
+                    {
+                        _logger.LogDebug("401 received. Retrying with Digest authentication for {Method} {Path}", method, uri.PathAndQuery);
+                        using var retry = new HttpRequestMessage(method, uri);
+                        if (!string.IsNullOrEmpty(accept))
+                            retry.Headers.Accept.ParseAdd(accept);
+                        retry.Headers.Authorization = BuildDigestAuthHeader(challenge, method.Method, uri.PathAndQuery);
+                        using var retryResp = await _http.SendAsync(retry, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
+                        sw.Stop();
+                        _logger.LogInformation("Response: {Method} {Path} => {Status} in {Elapsed} ms (digest)", method, uri.PathAndQuery, (int)retryResp.StatusCode, sw.ElapsedMilliseconds);
+                        if (!retryResp.IsSuccessStatusCode)
+                        {
+                            var err = await retryResp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                            if (IsTransientStatus((int)retryResp.StatusCode) && attempt < MaxRetries)
+                            {
+                                await DelayWithJitterAsync(attempt, ct).ConfigureAwait(false);
+                                continue;
+                            }
+                            ThrowIsapiException(retryResp.StatusCode, retryResp.ReasonPhrase ?? "HTTP error", err);
+                        }
+                        return await retryResp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                    }
+                }
+
+                var bytes = await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                sw.Stop();
+                _logger.LogInformation("Response: {Method} {Path} => {Status} in {Elapsed} ms, {Bytes} bytes", method, uri.PathAndQuery, (int)resp.StatusCode, sw.ElapsedMilliseconds, bytes?.Length ?? 0);
+
+                if (!resp.IsSuccessStatusCode)
+                {
+                    var err = Encoding.UTF8.GetString(bytes ?? Array.Empty<byte>());
+                    if (IsTransientStatus((int)resp.StatusCode) && attempt < MaxRetries)
+                    {
+                        _logger.LogWarning("Transient failure {Status}. Retrying attempt {Attempt}...", (int)resp.StatusCode, attempt + 1);
+                        await DelayWithJitterAsync(attempt, ct).ConfigureAwait(false);
+                        continue;
+                    }
+                    ThrowIsapiException(resp.StatusCode, resp.ReasonPhrase ?? "HTTP error", err);
+                }
+
+                return bytes!;
+            }
+            catch (TaskCanceledException) when (!ct.IsCancellationRequested && attempt < MaxRetries)
+            {
+                _logger.LogWarning("Request timeout on attempt {Attempt}. Retrying...", attempt);
+                await DelayWithJitterAsync(attempt, ct).ConfigureAwait(false);
+                continue;
+            }
+            catch (HttpRequestException ex) when (attempt < MaxRetries)
+            {
+                _logger.LogWarning(ex, "Transient network error on attempt {Attempt}. Retrying...", attempt);
+                await DelayWithJitterAsync(attempt, ct).ConfigureAwait(false);
+                continue;
             }
         }
 
-        if (!resp.IsSuccessStatusCode)
-        {
-            var err = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
-            ThrowIsapiException(resp, err);
-        }
-
-        return await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+        throw new HikvisionIsapiException(0, "Exhausted retries", string.Empty);
     }
 
-    private async Task<(HttpResponseMessage resp, string content)> SendAsync(HttpMethod method, string path, XDocument? body, string? accept, CancellationToken ct)
+    private async Task<(HttpStatusCode status, string reason, string content)> SendAsync(HttpMethod method, string path, XDocument? body, string? accept, CancellationToken ct)
     {
         var uri = _device.Url.Build(path);
-        using var req = new HttpRequestMessage(method, uri);
+        var corr = Guid.NewGuid().ToString("N");
 
-        if (!_preferDigest)
+        using var scope = _logger.BeginScope(new System.Collections.Generic.Dictionary<string, object?>
         {
-            var basic = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_device.Username}:{_device.Password}"));
-            req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", basic);
-        }
-        if (!string.IsNullOrEmpty(accept))
-            req.Headers.Accept.ParseAdd(accept);
+            ["device"] = _device.Url.Host,
+            ["path"] = uri.PathAndQuery,
+            ["corr"] = corr
+        });
 
-        if (body != null)
+        for (int attempt = 1; attempt <= MaxRetries; attempt++)
         {
-            var xmlStr = body.Declaration is null
-                ? "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + body.ToString(SaveOptions.DisableFormatting)
-                : body.ToString(SaveOptions.DisableFormatting);
-
-            req.Content = new StringContent(xmlStr, Encoding.UTF8, HikvisionConstants.XmlMediaType);
-        }
-
-        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
-
-        if (resp.StatusCode == HttpStatusCode.Unauthorized && _preferDigest)
-        {
-            var challenge = GetDigestChallengeHeader(resp.Headers.WwwAuthenticate);
-            if (challenge is not null)
+            var sw = Stopwatch.StartNew();
+            try
             {
-                using var retry = new HttpRequestMessage(method, uri);
+                using var req = new HttpRequestMessage(method, uri);
+
+                if (!_preferDigest)
+                {
+                    var basic = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_device.Username}:{_device.Password}"));
+                    req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", basic);
+                }
+                if (!string.IsNullOrEmpty(accept))
+                    req.Headers.Accept.ParseAdd(accept);
+
                 if (body != null)
                 {
                     var xmlStr = body.Declaration is null
                         ? "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + body.ToString(SaveOptions.DisableFormatting)
                         : body.ToString(SaveOptions.DisableFormatting);
-                    retry.Content = new StringContent(xmlStr, Encoding.UTF8, HikvisionConstants.XmlMediaType);
+
+                    req.Content = new StringContent(xmlStr, Encoding.UTF8, HikvisionConstants.XmlMediaType);
                 }
-                if (!string.IsNullOrEmpty(accept))
-                    retry.Headers.Accept.ParseAdd(accept);
-                retry.Headers.Authorization = BuildDigestAuthHeader(challenge, method.Method, uri.PathAndQuery);
-                var retryResp = await _http.SendAsync(retry, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
-                var retryText = await retryResp.Content.ReadAsStringAsync().ConfigureAwait(false);
-                return (retryResp, retryText);
+
+                _logger.LogDebug("Request attempt {Attempt}: {Method} {Uri} Accept={Accept} ContentLength={Len}",
+                    attempt, method, uri, accept, req.Content?.Headers.ContentLength ?? 0);
+
+                using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
+
+                if (resp.StatusCode == HttpStatusCode.Unauthorized && _preferDigest)
+                {
+                    var challenge = GetDigestChallengeHeader(resp.Headers.WwwAuthenticate);
+                    if (challenge is not null)
+                    {
+                        _logger.LogDebug("401 received. Retrying with Digest authentication for {Method} {Path}", method, uri.PathAndQuery);
+
+                        using var retry = new HttpRequestMessage(method, uri);
+                        if (body != null)
+                        {
+                            var xmlStr = body.Declaration is null
+                                ? "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + body.ToString(SaveOptions.DisableFormatting)
+                                : body.ToString(SaveOptions.DisableFormatting);
+                            retry.Content = new StringContent(xmlStr, Encoding.UTF8, HikvisionConstants.XmlMediaType);
+                        }
+                        if (!string.IsNullOrEmpty(accept))
+                            retry.Headers.Accept.ParseAdd(accept);
+                        retry.Headers.Authorization = BuildDigestAuthHeader(challenge, method.Method, uri.PathAndQuery);
+                        using var retryResp = await _http.SendAsync(retry, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
+                        var retryText = await retryResp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                        sw.Stop();
+                        _logger.LogInformation("Response: {Method} {Path} => {Status} in {Elapsed} ms (digest), body length={Len}", method, uri.PathAndQuery, (int)retryResp.StatusCode, sw.ElapsedMilliseconds, retryText?.Length ?? 0);
+
+                        if (!retryResp.IsSuccessStatusCode && IsTransientStatus((int)retryResp.StatusCode) && attempt < MaxRetries)
+                        {
+                            _logger.LogWarning("Transient status {Status}. Retrying attempt {Attempt}...", (int)retryResp.StatusCode, attempt + 1);
+                            await DelayWithJitterAsync(attempt, ct).ConfigureAwait(false);
+                            continue;
+                        }
+
+                        return (retryResp.StatusCode, retryResp.ReasonPhrase ?? "HTTP error", retryText);
+                    }
+                }
+
+                var text = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                sw.Stop();
+                _logger.LogInformation("Response: {Method} {Path} => {Status} in {Elapsed} ms, body length={Len}", method, uri.PathAndQuery, (int)resp.StatusCode, sw.ElapsedMilliseconds, text?.Length ?? 0);
+
+                if (!resp.IsSuccessStatusCode && IsTransientStatus((int)resp.StatusCode) && attempt < MaxRetries)
+                {
+                    _logger.LogWarning("Transient status {Status}. Retrying attempt {Attempt}...", (int)resp.StatusCode, attempt + 1);
+                    await DelayWithJitterAsync(attempt, ct).ConfigureAwait(false);
+                    continue;
+                }
+
+                return (resp.StatusCode, resp.ReasonPhrase ?? "HTTP error", text);
+            }
+            catch (TaskCanceledException) when (!ct.IsCancellationRequested && attempt < MaxRetries)
+            {
+                _logger.LogWarning("Request timeout on attempt {Attempt}. Retrying...", attempt);
+                await DelayWithJitterAsync(attempt, ct).ConfigureAwait(false);
+                continue;
+            }
+            catch (HttpRequestException ex) when (attempt < MaxRetries)
+            {
+                _logger.LogWarning(ex, "Transient network error on attempt {Attempt}. Retrying...", attempt);
+                await DelayWithJitterAsync(attempt, ct).ConfigureAwait(false);
+                continue;
             }
         }
 
-        var text = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
-        return (resp, text);
+        return (0, "Exhausted retries", string.Empty);
+    }
+
+    private static bool IsTransientStatus(int status)
+        => status is 408 or 429 or 500 or 502 or 503 or 504;
+
+    private static Task DelayWithJitterAsync(int attempt, CancellationToken ct)
+    {
+        var baseMs = Math.Min(1000 * (int)Math.Pow(2, attempt - 1), 4000);
+        var jitter = Random.Shared.Next(0, 250);
+        return Task.Delay(baseMs + jitter, ct);
     }
 
     private static System.Net.Http.Headers.AuthenticationHeaderValue? GetDigestChallengeHeader(System.Net.Http.Headers.HttpHeaderValueCollection<System.Net.Http.Headers.AuthenticationHeaderValue> headers)
@@ -259,20 +387,18 @@ public sealed class HikvisionClient : IDisposable
         int i = 0;
         while (i < parameters.Length)
         {
-            // skip spaces and commas
             while (i < parameters.Length && (parameters[i] == ' ' || parameters[i] == ',')) i++;
             int startKey = i;
             while (i < parameters.Length && parameters[i] != '=' && parameters[i] != ',') i++;
             if (i >= parameters.Length || parameters[i] != '=') break;
             var key = parameters.Substring(startKey, i - startKey).Trim();
-            i++; // skip '='
+            i++;
 
             string val;
             if (i < parameters.Length && parameters[i] == '"')
             {
-                i++; // skip opening quote
-                int startVal = i;
-                var innerSb = new StringBuilder(); // Renamed from sb to innerSb
+                i++;
+                var innerSb = new StringBuilder();
                 bool closed = false;
                 while (i < parameters.Length)
                 {
@@ -337,7 +463,6 @@ public sealed class HikvisionClient : IDisposable
 
         if (!string.IsNullOrEmpty(qop))
         {
-            // choose 'auth' if available in list
             var qopToken = qop.Contains("auth", StringComparison.OrdinalIgnoreCase) ? "auth" : qop;
             response = Md5Hex($"{ha1}:{nonce}:{nc}:{cnonce}:{qopToken}:{ha2}");
             sb.Append($"response=\"{response}\", ");
@@ -357,18 +482,17 @@ public sealed class HikvisionClient : IDisposable
         return new System.Net.Http.Headers.AuthenticationHeaderValue("Digest", sb.ToString());
     }
 
-    private static void ThrowIsapiException(HttpResponseMessage resp, string content)
+    private static void ThrowIsapiException(HttpStatusCode status, string reason, string content)
     {
         try
         {
             var x = string.IsNullOrWhiteSpace(content) ? null : XDocument.Parse(content);
 
-            string code = resp.StatusCode.ToString();
-            string msg = resp.ReasonPhrase ?? "HTTP error";
+            string code = ((int)status).ToString();
+            string msg = reason;
 
             if (x?.Root != null)
             {
-                // Hikvision often wraps response: <ResponseStatus> <statusCode> <statusString> ... </ResponseStatus>
                 var codeEl = x.Root.Descendants().FirstOrDefault(e => e.Name.LocalName.Equals("statusCode", StringComparison.OrdinalIgnoreCase));
                 var msgEl = x.Root.Descendants().FirstOrDefault(e => e.Name.LocalName.Equals("statusString", StringComparison.OrdinalIgnoreCase))
                           ?? x.Root.Descendants().FirstOrDefault(e => e.Name.LocalName.Equals("message", StringComparison.OrdinalIgnoreCase));
@@ -377,11 +501,11 @@ public sealed class HikvisionClient : IDisposable
                 if (msgEl != null) msg = msgEl.Value;
             }
 
-            throw new HikvisionIsapiException((int)resp.StatusCode, $"{code}: {msg}", content);
+            throw new HikvisionIsapiException((int)status, $"{code}: {msg}", content);
         }
         catch (System.Xml.XmlException)
         {
-            throw new HikvisionIsapiException((int)resp.StatusCode, resp.ReasonPhrase ?? "HTTP error", content);
+            throw new HikvisionIsapiException((int)status, reason, content);
         }
     }
 

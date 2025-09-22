@@ -1,4 +1,5 @@
 ﻿using SKTool.CCTVProtocols.Hikvision;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace SKTool.CCTVProtocols.Samples.WPF.ViewModels;
@@ -10,8 +11,8 @@ public sealed class DeviceOperationsViewModel : ViewModelBase
     public DeviceOperationsViewModel(Func<HikvisionClient> clientFactory)
     {
         _clientFactory = clientFactory;
-        GetDeviceInfoCommand = new AsyncRelayCommand(GetDeviceInfoAsync, () => !Busy);
-        RebootCommand = new AsyncRelayCommand(RebootAsync, () => !Busy);
+        GetDeviceInfoCommand = new AsyncRelayCommand(ct => GetDeviceInfoAsync(ct), () => !Busy);
+        RebootCommand = new AsyncRelayCommand(ct => RebootAsync(ct), () => !Busy);
     }
 
     private bool _busy;
@@ -23,13 +24,13 @@ public sealed class DeviceOperationsViewModel : ViewModelBase
     public AsyncRelayCommand GetDeviceInfoCommand { get; }
     public AsyncRelayCommand RebootCommand { get; }
 
-    public async Task GetDeviceInfoAsync()
+    public async Task GetDeviceInfoAsync(CancellationToken ct = default)
     {
         Busy = true;
         try
         {
             using var client = _clientFactory();
-            var x = await client.GetDeviceInfoAsync();
+            var x = await client.GetDeviceInfoAsync(ct);
             DeviceInfoXml = x.ToString();
         }
         finally
@@ -38,13 +39,13 @@ public sealed class DeviceOperationsViewModel : ViewModelBase
         }
     }
 
-    public async Task RebootAsync()
+    public async Task RebootAsync(CancellationToken ct = default)
     {
         Busy = true;
         try
         {
             using var client = _clientFactory();
-            await client.RebootAsync();
+            await client.RebootAsync(ct);
         }
         finally
         {

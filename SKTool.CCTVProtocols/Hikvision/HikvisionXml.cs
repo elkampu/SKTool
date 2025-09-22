@@ -34,4 +34,23 @@ public static class HikvisionXml
         var nsName = root.GetDefaultNamespace().NamespaceName ?? "";
         return nsName.Contains("ver20", System.StringComparison.OrdinalIgnoreCase);
     }
+
+    // Ensures a container/leaf structure exists and sets the leaf value.
+    public static XElement EnsurePath(XElement parent, XName container, XName leaf, string value)
+    {
+        var c = parent.Element(container);
+        if (c is null)
+        {
+            c = new XElement(container);
+            parent.Add(c);
+        }
+        var l = c.Element(leaf);
+        if (l is null)
+        {
+            l = new XElement(leaf);
+            c.Add(l);
+        }
+        l.Value = value;
+        return l;
+    }
 }

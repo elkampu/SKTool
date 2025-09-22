@@ -8,7 +8,7 @@ public sealed class DeviceModel
     public int Port { get; set; } = 80;
     public bool UseHttps { get; set; } = false;
     public string Username { get; set; } = "admin";
-    public string Password { get; set; } = "Securitas4813"; // Replace for your environment
+    public string Password { get; set; } = ""; // Set via UI. Do not hardcode secrets.
     public bool PreferDigest { get; set; } = true;
 
     public HikvisionDevice ToDevice()

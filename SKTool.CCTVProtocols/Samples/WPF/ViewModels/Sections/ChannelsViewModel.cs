@@ -1,4 +1,5 @@
 ﻿using System.Collections.ObjectModel;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
 using SKTool.CCTVProtocols.Hikvision;
@@ -12,7 +13,7 @@ public sealed class ChannelsViewModel : ViewModelBase
     public ChannelsViewModel(Func<HikvisionClient> clientFactory)
     {
         _clientFactory = clientFactory;
-        LoadCommand = new AsyncRelayCommand(LoadAsync, () => !Busy);
+        LoadCommand = new AsyncRelayCommand(ct => LoadAsync(ct), () => !Busy);
     }
 
     private bool _busy;
@@ -25,20 +26,21 @@ public sealed class ChannelsViewModel : ViewModelBase
 
     public AsyncRelayCommand LoadCommand { get; }
 
-    public async Task LoadAsync()
+    public async Task LoadAsync(CancellationToken ct = default)
     {
         Busy = true;
         try
         {
             Channels.Clear();
             using var client = _clientFactory();
-            var x = await client.GetStreamingChannelsAsync();
+            var x = await client.GetStreamingChannelsAsync(ct);
             RawXml = x.ToString();
 
-            foreach (var ch in x.Descendants("StreamingChannel"))
+            var ns = x.Root?.GetDefaultNamespace() ?? XNamespace.None;
+            foreach (var ch in x.Descendants(ns + "StreamingChannel"))
             {
-                var id = ch.Element("id")?.Value ?? "";
-                var name = ch.Element("channelName")?.Value ?? "";
+                var id = ch.Element(ns + "id")?.Value ?? "";
+                var name = ch.Element(ns + "channelName")?.Value ?? "";
                 Channels.Add(new ChannelItem { Id = id, Name = name });
             }
         }

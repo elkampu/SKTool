@@ -2,6 +2,7 @@
 using SKTool.CCTVProtocols.Hikvision;
 using System;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Media.Imaging;
 
@@ -14,7 +15,7 @@ public sealed class SnapshotViewModel : ViewModelBase
     public SnapshotViewModel(Func<HikvisionClient> clientFactory)
     {
         _clientFactory = clientFactory;
-        CaptureCommand = new AsyncRelayCommand(CaptureAsync, () => !Busy);
+        CaptureCommand = new AsyncRelayCommand(ct => CaptureAsync(ct), () => !Busy);
         SaveCommand = new AsyncRelayCommand(SaveAsync, () => Snapshot != null && !Busy);
     }
 
@@ -32,13 +33,13 @@ public sealed class SnapshotViewModel : ViewModelBase
     public AsyncRelayCommand CaptureCommand { get; }
     public AsyncRelayCommand SaveCommand { get; }
 
-    public async Task CaptureAsync()
+    public async Task CaptureAsync(CancellationToken ct = default)
     {
         Busy = true;
         try
         {
             using var client = _clientFactory();
-            _lastBytes = await client.GetSnapshotAsync(ChannelId);
+            _lastBytes = await client.GetSnapshotAsync(ChannelId, ct);
             Snapshot = LoadBitmap(_lastBytes);
         }
         finally
